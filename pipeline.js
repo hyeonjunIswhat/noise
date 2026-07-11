@@ -53,7 +53,8 @@ export class AutoPipeline {
     this.e.lockedFreq = saved;
     const snr = on - bg;
     if (snr < 8) {
-      const diag = '[진단: 미디어경로 ' + (this.e.elPlay === 'ok' ? '정상' : '실패(' + this.e.elPlay + ')')
+      const diag = '[진단: 마이크=' + (this.e.micLabel || '기본')
+        + ' / 미디어경로 ' + (this.e.elPlay === 'ok' ? '정상' : '실패(' + this.e.elPlay + ')')
         + ' / 오디오상태 ' + this.e.ctx.state + ' / ' + this.e.ctx.sampleRate + 'Hz]';
       this.ui.error('⚠️ 자가진단 실패: 테스트음 +' + snr.toFixed(1) + ' dB — 마이크에 감지 안 됨. ' + diag + '<br>'
         + '① 측면 무음 스위치 해제 ② 볼륨 버튼으로 미디어 볼륨 올리기 ③ 블루투스 기기 연결 끊기 '
@@ -61,7 +62,7 @@ export class AutoPipeline {
       return false;
     }
     this.ui.error('');
-    this.ui.status('자가진단 통과: 출력→마이크 +' + snr.toFixed(1) + ' dB');
+    this.ui.status('자가진단 통과 +' + snr.toFixed(1) + ' dB · 마이크: ' + (this.e.micLabel || '기본'));
     return true;
   }
 

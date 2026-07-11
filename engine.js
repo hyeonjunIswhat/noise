@@ -17,8 +17,22 @@ export class AudioEngine {
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (_) {}
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     await this.ctx.resume();
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: {
-      echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    const micOpts = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: micOpts });
+    // 유선 DAC의 헤드셋 마이크가 기본 선택되면 방 소음 측정이 불가 → 내장 마이크로 강제 전환
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devs.filter(d => d.kind === 'audioinput');
+      const builtin = inputs.find(d => /iphone|아이폰|내장|built/i.test(d.label));
+      const cur = this.stream.getAudioTracks()[0];
+      this.micLabel = cur.label || '(이름 없음)';
+      if (builtin && builtin.label !== cur.label) {
+        cur.stop();
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: {
+          ...micOpts, deviceId: { exact: builtin.deviceId } } });
+        this.micLabel = this.stream.getAudioTracks()[0].label;
+      }
+    } catch (_) { this.micLabel = this.micLabel || '기본'; }
     const src = this.ctx.createMediaStreamSource(this.stream);
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 32768;

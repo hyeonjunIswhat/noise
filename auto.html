@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AntiHum Auto</title>
+<style>
+  :root {
+    --bg:#101418; --panel:#181e24; --line:#2a333c;
+    --text:#dde4ea; --dim:#7b8894;
+    --accent:#4cc9a4; --warn:#e0685a; --mid:#d9a441;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,"Pretendard",sans-serif;
+    min-height:100vh;padding:20px 16px 40px;max-width:480px;margin:0 auto;}
+  h1{font-size:17px;font-weight:700;letter-spacing:.04em;}
+  h1 span{color:var(--accent);}
+  .status{font-size:13px;color:var(--dim);margin-top:6px;min-height:18px;}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:20px 16px;text-align:center;margin-top:14px;}
+  .freq{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:44px;font-weight:600;
+    font-variant-numeric:tabular-nums;line-height:1.1;}
+  .freq.on{color:var(--accent);}
+  .flabel{font-size:11px;color:var(--dim);margin-top:6px;letter-spacing:.05em;}
+
+  .residual{margin-top:16px;text-align:left;}
+  .residual .row{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);
+    font-family:ui-monospace,Menlo,monospace;margin-bottom:6px;}
+  .bar{height:14px;border-radius:7px;background:#0a0d10;border:1px solid var(--line);overflow:hidden;}
+  .fill{height:100%;width:0%;background:var(--accent);border-radius:7px;
+    transition:width .12s linear,background .3s;}
+
+  .readout{display:flex;justify-content:space-around;margin-top:14px;
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--dim);}
+  .readout b{color:var(--text);font-weight:600;}
+
+  .stage{margin-top:14px;font-size:12px;color:var(--mid);min-height:16px;text-align:center;}
+
+  .btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:20px;}
+  button{font-family:inherit;font-size:16px;font-weight:700;padding:16px 4px;border-radius:12px;
+    border:1px solid var(--line);background:var(--panel);color:var(--text);}
+  button:disabled{opacity:.35;}
+  #startBtn{background:var(--accent);color:#08110d;border:none;}
+  #stopBtn{background:var(--warn);color:#fff;border:none;}
+  button:active:not(:disabled){transform:scale(.97);}
+
+  .note{margin-top:24px;font-size:11px;line-height:1.6;color:var(--dim);
+    border-top:1px solid var(--line);padding-top:14px;}
+  .err{color:var(--warn);font-size:12px;margin-top:10px;line-height:1.5;}
+</style>
+</head>
+<body>
+
+<h1>Anti<span>Hum</span> Auto</h1>
+<div class="status" id="status">에어컨 켜고 [시작]만 누르세요 — 나머지는 자동</div>
+
+<div class="panel">
+  <div class="freq" id="freq">— Hz</div>
+  <div class="flabel" id="flabel">타겟 주파수</div>
+
+  <div class="residual">
+    <div class="row"><span>잔류 레벨 (낮을수록 상쇄 성공)</span><span id="resDb">— dB</span></div>
+    <div class="bar"><div class="fill" id="resFill"></div></div>
+  </div>
+
+  <div class="readout">
+    <span>위상 <b id="phaseRO">—</b></span>
+    <span>볼륨 <b id="volRO">—</b></span>
+    <span>상쇄 <b id="gainRO">—</b></span>
+  </div>
+
+  <div class="stage" id="stage"></div>
+</div>
+
+<div class="btns">
+  <button id="startBtn">시작</button>
+  <button id="pauseBtn" disabled>대기</button>
+  <button id="stopBtn" disabled>종료</button>
+</div>
+<div class="err" id="err"></div>
+
+<div class="note">
+  자동 순서: 주파수 측정(3초) → 위상 거친 스캔 → 정밀 스캔 → 볼륨 최적화 → 상시 추적(미세 보정 + 60초마다 주파수 재확인, 어긋나면 자동 재보정).<br><br>
+  아이폰을 청취 위치에 두세요. 상쇄는 마이크 주변에서만 발생합니다. 무음 스위치를 해제하고 미디어 볼륨을 올려야 소리가 나갑니다. 유선 스피커 권장.
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const statusEl=$('status'), freqEl=$('freq'), flabel=$('flabel');
+  const resDb=$('resDb'), resFill=$('resFill'), errEl=$('err'), stageEl=$('stage');
+  const phaseRO=$('phaseRO'), volRO=$('volRO'), gainRO=$('gainRO');
+  const startBtn=$('startBtn'), pauseBtn=$('pauseBtn'), stopBtn=$('stopBtn');
+
+  let ctx=null, analyser=null, stream=null;
+  let oscSin=null, oscCos=null, gSin=null, gCos=null, master=null;
+  let running=false, paused=false, aborted=false;
+  let lockedFreq=0, phaseDeg=0, vol=0;
+  let baselineDb=0, bestDb=0, residual=-80;
+  let goertzelTimer=null, wakeLock=null;
+  const timeBuf=new Float32Array(8192);
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+  // ---------- 저수준 ----------
+  function setPhase(deg){
+    phaseDeg=((deg%360)+360)%360;
+    const phi=phaseDeg*Math.PI/180, t=ctx.currentTime;
+    gSin.gain.setTargetAtTime(Math.cos(phi),t,0.02);
+    gCos.gain.setTargetAtTime(Math.sin(phi),t,0.02);
+    phaseRO.textContent=phaseDeg.toFixed(0)+'°';
+  }
+  function setVol(v){
+    vol=Math.max(0,Math.min(0.85,v));
+    master.gain.setTargetAtTime(paused?0:vol,ctx.currentTime,0.03);
+    volRO.textContent=vol.toFixed(2);
+  }
+  function setFreq(f){
+    lockedFreq=f;
+    oscSin.frequency.setValueAtTime(f,ctx.currentTime);
+    oscCos.frequency.setValueAtTime(f,ctx.currentTime);
+    freqEl.textContent=f.toFixed(1)+' Hz';
+  }
+  function measureResidualOnce(){
+    analyser.getFloatTimeDomainData(timeBuf);
+    const k=2*Math.cos(2*Math.PI*lockedFreq/ctx.sampleRate);
+    let s1=0,s2=0;
+    for(let i=0;i<timeBuf.length;i++){const s0=timeBuf[i]+k*s1-s2;s2=s1;s1=s0;}
+    const p=Math.max(s1*s1+s2*s2-k*s1*s2,0);
+    return 20*Math.log10(Math.max(Math.sqrt(p)/timeBuf.length,1e-9));
+  }
+  // dwell(ms) 동안 잔류 평균 측정
+  async function sample(ms){
+    const vals=[]; const t0=performance.now();
+    while(performance.now()-t0<ms){
+      vals.push(measureResidualOnce());
+      await sleep(50);
+      if(aborted) return 0;
+    }
+    return vals.reduce((a,b)=>a+b,0)/vals.length;
+  }
+  function detectFreqOnce(){
+    const bins=analyser.frequencyBinCount;
+    const data=new Float32Array(bins);
+    analyser.getFloatFrequencyData(data); // 이미 dB(로그) 스케일
+    const binHz=ctx.sampleRate/analyser.fftSize;
+    const lo=Math.max(1,Math.floor(40/binHz)), hi=Math.min(bins-2,Math.ceil(400/binHz));
+    let pk=lo; for(let i=lo;i<=hi;i++) if(data[i]>data[pk]) pk=i;
+    const a=data[pk-1],b=data[pk],c=data[pk+1],d=a-2*b+c;
+    let f=pk*binHz;
+    if(Math.abs(d)>1e-9) f=(pk+0.5*(a-c)/d)*binHz;
+    return f;
+  }
+  async function detectFreqStable(ms){
+    const t0=performance.now(); const fs=[];
+    while(performance.now()-t0<ms){
+      fs.push(detectFreqOnce());
+      await sleep(200);
+      if(aborted) return 0;
+    }
+    fs.sort((a,b)=>a-b);
+    return fs[Math.floor(fs.length/2)]; // 중앙값
+  }
+  function updateResidualUI(db){
+    residual=db;
+    resDb.textContent=db.toFixed(1)+' dB';
+    const norm=Math.max(0,Math.min(1,(db+90)/70));
+    resFill.style.width=(norm*100)+'%';
+    resFill.style.background=norm>0.65?'var(--warn)':norm>0.4?'var(--mid)':'var(--accent)';
+    if(baselineDb) gainRO.textContent=Math.max(0,baselineDb-db).toFixed(1)+' dB';
+  }
+
+  // ---------- 자동 파이프라인 ----------
+  async function calibrate(fullCoarse){
+    // 1) 주파수 측정 (출력 무음 상태)
+    stageEl.textContent='① 주파수 측정 중 (3초)';
+    master.gain.setTargetAtTime(0,ctx.currentTime,0.03);
+    await sleep(400);
+    const f=await detectFreqStable(3000);
+    if(aborted) return false;
+    setFreq(f);
+    freqEl.classList.add('on');
+    flabel.textContent='타겟 고정';
+    baselineDb=await sample(600);
+    if(aborted) return false;
+
+    // 2) 거친 스캔
+    setVol(Math.max(vol,0.12));
+    master.gain.setTargetAtTime(vol,ctx.currentTime,0.03);
+    let best={deg:phaseDeg,level:Infinity};
+    if(fullCoarse){
+      stageEl.textContent='② 위상 거친 스캔 (약 11초)';
+      for(let d=0;d<360;d+=10){
+        setPhase(d); await sleep(120);
+        const r=await sample(180);
+        if(aborted) return false;
+        updateResidualUI(r);
+        if(r<best.level) best={deg:d,level:r};
+      }
+    } else { best={deg:phaseDeg,level:await sample(300)}; }
+
+    // 3) 정밀 스캔 ±10°/2°
+    stageEl.textContent='③ 위상 정밀 스캔';
+    let fine=best;
+    for(let d=best.deg-10;d<=best.deg+10;d+=2){
+      setPhase(d); await sleep(100);
+      const r=await sample(160);
+      if(aborted) return false;
+      updateResidualUI(r);
+      if(r<fine.level) fine={deg:((d%360)+360)%360,level:r};
+    }
+    setPhase(fine.deg);
+
+    // 4) 볼륨 최적화
+    stageEl.textContent='④ 볼륨 자동 최적화';
+    let bestV={v:vol,level:fine.level};
+    for(let v=vol+0.05;v<=0.8;v+=0.05){
+      setVol(v); await sleep(120);
+      const r=await sample(220);
+      if(aborted) return false;
+      updateResidualUI(r);
+      if(r<bestV.level) bestV={v,level:r};
+      else if(r>bestV.level+3) break; // 지나침 → 중단
+    }
+    setVol(bestV.v);
+    bestDb=bestV.level;
+    stageEl.textContent='⑤ 상시 추적 중 — 자동 미세보정';
+    statusEl.textContent=`상쇄 동작 중: ${lockedFreq.toFixed(1)} Hz, ${Math.max(0,baselineDb-bestDb).toFixed(1)} dB 감쇄`;
+    return true;
+  }
+
+  // 상시 추적: 힐클라임 미세보정 + 주기적 재확인
+  async function trackLoop(){
+    let lastRecheck=performance.now();
+    let worseCount=0;
+    while(running && !aborted){
+      if(paused){ await sleep(300); continue; }
+
+      const cur=await sample(400);
+      if(aborted) break;
+      updateResidualUI(cur);
+
+      // 악화 감시: 최적 대비 6dB 이상 나빠짐 지속 → 전체 재보정
+      if(cur>bestDb+6) worseCount++; else worseCount=0;
+      if(worseCount>=4){
+        statusEl.textContent='소음 변화 감지 — 자동 재보정';
+        await calibrate(true);
+        worseCount=0; lastRecheck=performance.now();
+        continue;
+      }
+
+      // 힐클라임: 위상 ±2° 시도
+      for(const delta of [2,-2]){
+        if(paused||aborted||!running) break;
+        const orig=phaseDeg;
+        setPhase(orig+delta); await sleep(80);
+        const r=await sample(260);
+        if(r<cur-0.4){ if(r<bestDb) bestDb=r; break; }
+        setPhase(orig); await sleep(60);
+      }
+      // 가끔 볼륨 ±0.03 시도
+      if(Math.random()<0.3){
+        const origV=vol;
+        const tryV=origV+(Math.random()<0.5?0.03:-0.03);
+        setVol(tryV); await sleep(80);
+        const r=await sample(260);
+        if(!(r<residual-0.4)) setVol(origV);
+        else if(r<bestDb) bestDb=r;
+      }
+
+      // 60초마다 주파수 재확인
+      if(performance.now()-lastRecheck>60000){
+        stageEl.textContent='주파수 재확인 중';
+        master.gain.setTargetAtTime(0,ctx.currentTime,0.05);
+        await sleep(600);
+        const f=await detectFreqStable(1500);
+        master.gain.setTargetAtTime(paused?0:vol,ctx.currentTime,0.05);
+        if(f>0 && Math.abs(f-lockedFreq)>1.0){
+          statusEl.textContent='주파수 드리프트 — 자동 재보정';
+          await calibrate(true);
+        }
+        lastRecheck=performance.now();
+        stageEl.textContent='⑤ 상시 추적 중 — 자동 미세보정';
+      }
+      await sleep(1200);
+    }
+  }
+
+  // ---------- 버튼 ----------
+  startBtn.addEventListener('click', async ()=>{
+    errEl.textContent='';
+    try{
+      ctx=new (window.AudioContext||window.webkitAudioContext)();
+      await ctx.resume();
+      stream=await navigator.mediaDevices.getUserMedia({audio:{
+        echoCancellation:false,noiseSuppression:false,autoGainControl:false}});
+      const src=ctx.createMediaStreamSource(stream);
+      analyser=ctx.createAnalyser();
+      analyser.fftSize=32768;
+      analyser.smoothingTimeConstant=0.4;
+      src.connect(analyser);
+
+      master=ctx.createGain(); master.gain.value=0; master.connect(ctx.destination);
+      gSin=ctx.createGain(); gCos=ctx.createGain();
+      gSin.connect(master); gCos.connect(master);
+      oscSin=ctx.createOscillator(); oscSin.type='sine';
+      const cosWave=ctx.createPeriodicWave(new Float32Array([0,1]),new Float32Array([0,0]),
+        {disableNormalization:true});
+      oscCos=ctx.createOscillator(); oscCos.setPeriodicWave(cosWave);
+      const t0=ctx.currentTime+0.05;
+      oscSin.start(t0); oscCos.start(t0);
+
+      try{ wakeLock=await navigator.wakeLock.request('screen'); }catch(_){}
+
+      running=true; paused=false; aborted=false;
+      startBtn.disabled=true; pauseBtn.disabled=false; stopBtn.disabled=false;
+      statusEl.textContent='자동 보정 시작';
+
+      const ok=await calibrate(true);
+      if(ok) await trackLoop();
+    }catch(e){
+      errEl.textContent='오류: '+e.message+' — 무음 스위치 해제, 마이크 권한 확인.';
+      teardown();
+    }
+  });
+
+  pauseBtn.addEventListener('click', ()=>{
+    if(!running) return;
+    paused=!paused;
+    master.gain.setTargetAtTime(paused?0:vol,ctx.currentTime,0.05);
+    pauseBtn.textContent=paused?'재개':'대기';
+    statusEl.textContent=paused?'대기 중 — 출력 정지, 설정 유지':'상쇄 재개';
+    stageEl.textContent=paused?'':'⑤ 상시 추적 중 — 자동 미세보정';
+  });
+
+  stopBtn.addEventListener('click', teardown);
+
+  function teardown(){
+    aborted=true; running=false; paused=false;
+    clearInterval(goertzelTimer);
+    if(wakeLock){ try{wakeLock.release();}catch(_){} wakeLock=null; }
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    if(ctx){ try{ctx.close();}catch(_){} }
+    ctx=null;
+    startBtn.disabled=false; pauseBtn.disabled=true; stopBtn.disabled=true;
+    pauseBtn.textContent='대기';
+    freqEl.classList.remove('on'); freqEl.textContent='— Hz';
+    flabel.textContent='타겟 주파수';
+    resDb.textContent='— dB'; resFill.style.width='0%';
+    phaseRO.textContent='—'; volRO.textContent='—'; gainRO.textContent='—';
+    stageEl.textContent='';
+    statusEl.textContent='종료 — 다시 시작하려면 [시작]';
+  }
+})();
+</script>
+</body>
+</html>

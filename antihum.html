@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AntiHum — 주기성 소음 캔슬링</title>
+<style>
+  :root {
+    --bg: #101418;
+    --panel: #181e24;
+    --line: #2a333c;
+    --text: #dde4ea;
+    --dim: #7b8894;
+    --accent: #4cc9a4;
+    --warn: #e0685a;
+    --mid: #d9a441;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Pretendard", sans-serif;
+    min-height: 100vh;
+    padding: 20px 16px 40px;
+    max-width: 480px;
+    margin: 0 auto;
+  }
+  h1 { font-size: 17px; font-weight: 700; letter-spacing: .04em; }
+  h1 span { color: var(--accent); }
+  .status { font-size: 12px; color: var(--dim); margin-top: 4px; min-height: 16px; }
+
+  .freq-panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px 16px;
+    text-align: center;
+    margin-top: 16px;
+  }
+  .freq-value {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 46px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .freq-value.locked { color: var(--accent); }
+  .freq-label { font-size: 11px; color: var(--dim); margin-top: 6px; letter-spacing: .05em; }
+
+  .residual { margin-top: 16px; }
+  .residual .row {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: var(--dim);
+    font-family: ui-monospace, Menlo, monospace;
+    margin-bottom: 6px;
+  }
+  .residual .bar {
+    height: 14px; border-radius: 7px;
+    background: #0a0d10;
+    border: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .residual .fill {
+    height: 100%; width: 0%;
+    background: var(--accent);
+    border-radius: 7px;
+    transition: width .12s linear, background .3s;
+  }
+
+  .controls { margin-top: 20px; }
+  .ctrl { margin-bottom: 18px; }
+  .ctrl .row {
+    display: flex; justify-content: space-between;
+    font-size: 12px; margin-bottom: 8px;
+  }
+  .ctrl .row b { font-weight: 600; }
+  .ctrl .row .val { font-family: ui-monospace, Menlo, monospace; color: var(--accent); }
+  input[type=range] {
+    width: 100%;
+    height: 34px;
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px; background: var(--line);
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--text);
+    margin-top: -11px;
+    border: 3px solid var(--bg);
+  }
+  input[type=range]:disabled::-webkit-slider-thumb { background: var(--dim); }
+
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+  button {
+    font-family: inherit;
+    font-size: 15px; font-weight: 600;
+    padding: 14px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+  }
+  button:disabled { opacity: .35; }
+  button.primary { grid-column: 1 / -1; background: var(--accent); color: #08110d; border: none; }
+  button.primary.stop { background: var(--warn); color: #fff; }
+  button:active:not(:disabled) { transform: scale(.98); }
+
+  .note {
+    margin-top: 24px;
+    font-size: 11px; line-height: 1.6;
+    color: var(--dim);
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+  .err { color: var(--warn); font-size: 12px; margin-top: 10px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<h1>Anti<span>Hum</span></h1>
+<div class="status" id="status">대기 중 — 아이폰을 청취 위치에 두세요</div>
+
+<div class="freq-panel">
+  <div class="freq-value" id="freq">— Hz</div>
+  <div class="freq-label" id="freqLabel">지배 주파수 (40–400 Hz)</div>
+
+  <div class="residual">
+    <div class="row"><span>잔류 레벨 (낮을수록 상쇄 성공)</span><span id="resDb">— dB</span></div>
+    <div class="bar"><div class="fill" id="resFill"></div></div>
+  </div>
+</div>
+
+<div class="controls">
+  <div class="ctrl">
+    <div class="row"><b>위상</b><span class="val" id="phaseVal">0°</span></div>
+    <input type="range" id="phase" min="0" max="360" step="1" value="0" disabled>
+  </div>
+  <div class="ctrl">
+    <div class="row"><b>볼륨</b><span class="val" id="gainVal">0.10</span></div>
+    <input type="range" id="gain" min="0" max="0.8" step="0.01" value="0.10" disabled>
+  </div>
+
+  <div class="btns">
+    <button class="primary" id="startBtn">시작</button>
+    <button id="lockBtn" disabled>주파수 고정</button>
+    <button id="sweepBtn" disabled>자동 위상 스캔</button>
+  </div>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="note">
+  사용 순서: ① 에어컨 켜고 [시작] ② 주파수가 안정되면 [주파수 고정] ③ [자동 위상 스캔]으로 최소 잔류점 탐색 ④ 위상·볼륨 미세 조정.<br><br>
+  상쇄는 마이크(아이폰) 주변 국소 영역에서만 발생합니다. 유선 스피커 권장 — 블루투스는 지연 때문에 위상이 흔들립니다. 위상이 안 맞은 상태에서 볼륨을 올리면 소음이 커지니 낮게 시작하세요.
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const statusEl = $('status'), freqEl = $('freq'), freqLabel = $('freqLabel');
+  const resDb = $('resDb'), resFill = $('resFill'), errEl = $('err');
+  const phaseSl = $('phase'), gainSl = $('gain');
+  const phaseVal = $('phaseVal'), gainVal = $('gainVal');
+  const startBtn = $('startBtn'), lockBtn = $('lockBtn'), sweepBtn = $('sweepBtn');
+
+  let ctx = null, analyser = null, stream = null;
+  let oscSin = null, oscCos = null, gSin = null, gCos = null, master = null;
+  let running = false, locked = false, lockedFreq = 0;
+  let detectedFreq = 0, residual = -80;
+  let rafId = null, goertzelTimer = null;
+  let sweeping = false;
+
+  const FFT_SIZE = 32768;
+  const timeBuf = new Float32Array(8192);
+
+  // ---------- 시작 / 정지 ----------
+  startBtn.addEventListener('click', async () => {
+    if (running) { stopAll(); return; }
+    errEl.textContent = '';
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      await ctx.resume();
+
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        }
+      });
+
+      const src = ctx.createMediaStreamSource(stream);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = FFT_SIZE;
+      analyser.smoothingTimeConstant = 0.5;
+      src.connect(analyser);
+
+      // 출력 체인: sin·cosφ + cos·sinφ = sin(θ+φ)
+      master = ctx.createGain();
+      master.gain.value = 0;           // 고정 전에는 무음
+      master.connect(ctx.destination);
+
+      gSin = ctx.createGain(); gCos = ctx.createGain();
+      gSin.connect(master); gCos.connect(master);
+
+      oscSin = ctx.createOscillator();
+      oscSin.type = 'sine';
+
+      const cosWave = ctx.createPeriodicWave(
+        new Float32Array([0, 1]),      // real = cos 성분
+        new Float32Array([0, 0]),
+        { disableNormalization: true }
+      );
+      oscCos = ctx.createOscillator();
+      oscCos.setPeriodicWave(cosWave);
+
+      const t0 = ctx.currentTime + 0.05; // 동시 시작 → 위상 정렬
+      oscSin.start(t0); oscCos.start(t0);
+      applyPhase();
+
+      running = true;
+      startBtn.textContent = '정지';
+      startBtn.classList.add('stop');
+      lockBtn.disabled = false;
+      statusEl.textContent = '측정 중 — 지배 주파수 탐색';
+      loopFFT();
+      goertzelTimer = setInterval(measureResidual, 100);
+    } catch (e) {
+      errEl.textContent = '마이크 접근 실패: ' + e.message +
+        ' — 이 화면에서 마이크가 차단되면 HTML 파일을 다운로드해 Safari로 열어보세요.';
+      stopAll();
+    }
+  });
+
+  function stopAll() {
+    running = false; locked = false; sweeping = false;
+    cancelAnimationFrame(rafId);
+    clearInterval(goertzelTimer);
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    if (ctx) ctx.close();
+    ctx = null;
+    startBtn.textContent = '시작';
+    startBtn.classList.remove('stop');
+    lockBtn.disabled = true; lockBtn.textContent = '주파수 고정';
+    sweepBtn.disabled = true;
+    phaseSl.disabled = true; gainSl.disabled = true;
+    freqEl.classList.remove('locked');
+    freqEl.textContent = '— Hz';
+    freqLabel.textContent = '지배 주파수 (40–400 Hz)';
+    resDb.textContent = '— dB';
+    resFill.style.width = '0%';
+    statusEl.textContent = '정지';
+  }
+
+  // ---------- FFT 피크 검출 ----------
+  function loopFFT() {
+    if (!running) return;
+    const bins = analyser.frequencyBinCount;
+    const data = new Float32Array(bins);
+    analyser.getFloatFrequencyData(data);
+
+    const binHz = ctx.sampleRate / analyser.fftSize;
+    const lo = Math.max(1, Math.floor(40 / binHz));
+    const hi = Math.min(bins - 2, Math.ceil(400 / binHz));
+
+    let pk = lo, pv = -Infinity;
+    for (let i = lo; i <= hi; i++) if (data[i] > pv) { pv = data[i]; pk = i; }
+
+    // 포물선 보간
+    const a = data[pk - 1], b = data[pk], c = data[pk + 1];
+    const denom = a - 2 * b + c;
+    let f = pk * binHz;
+    if (Math.abs(denom) > 1e-9) f = (pk + 0.5 * (a - c) / denom) * binHz;
+    detectedFreq = f;
+
+    if (!locked) freqEl.textContent = f.toFixed(1) + ' Hz';
+    rafId = requestAnimationFrame(loopFFT);
+  }
+
+  // ---------- 잔류 레벨 (Goertzel) ----------
+  const sweepSamples = [];
+  function measureResidual() {
+    if (!locked || !running) return;
+    analyser.getFloatTimeDomainData(timeBuf);
+    const k = 2 * Math.cos(2 * Math.PI * lockedFreq / ctx.sampleRate);
+    let s1 = 0, s2 = 0;
+    for (let i = 0; i < timeBuf.length; i++) {
+      const s0 = timeBuf[i] + k * s1 - s2;
+      s2 = s1; s1 = s0;
+    }
+    const power = Math.max(s1 * s1 + s2 * s2 - k * s1 * s2, 0);
+    const mag = Math.sqrt(power) / timeBuf.length;
+    const db = 20 * Math.log10(Math.max(mag, 1e-9));
+
+    residual = residual * 0.6 + db * 0.4;
+    resDb.textContent = residual.toFixed(1) + ' dB';
+    const norm = Math.max(0, Math.min(1, (residual + 90) / 70));
+    resFill.style.width = (norm * 100) + '%';
+    resFill.style.background =
+      norm > 0.65 ? 'var(--warn)' : norm > 0.4 ? 'var(--mid)' : 'var(--accent)';
+
+    if (sweeping) sweepSamples.push(db);
+  }
+
+  // ---------- 주파수 고정 ----------
+  lockBtn.addEventListener('click', () => {
+    if (locked) { // 해제
+      locked = false;
+      master.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+      lockBtn.textContent = '주파수 고정';
+      sweepBtn.disabled = true;
+      phaseSl.disabled = true; gainSl.disabled = true;
+      freqEl.classList.remove('locked');
+      freqLabel.textContent = '지배 주파수 (40–400 Hz)';
+      statusEl.textContent = '고정 해제 — 재탐색 중';
+      return;
+    }
+    if (detectedFreq <= 0) return;
+    lockedFreq = detectedFreq;
+    oscSin.frequency.setValueAtTime(lockedFreq, ctx.currentTime);
+    oscCos.frequency.setValueAtTime(lockedFreq, ctx.currentTime);
+    master.gain.setTargetAtTime(parseFloat(gainSl.value), ctx.currentTime, 0.05);
+    locked = true;
+    lockBtn.textContent = '고정 해제';
+    sweepBtn.disabled = false;
+    phaseSl.disabled = false; gainSl.disabled = false;
+    freqEl.classList.add('locked');
+    freqEl.textContent = lockedFreq.toFixed(1) + ' Hz';
+    freqLabel.textContent = '타겟 고정 — 위상 스캔 권장';
+    statusEl.textContent = lockedFreq.toFixed(1) + ' Hz 역위상 톤 출력 중';
+  });
+
+  // ---------- 위상 / 볼륨 ----------
+  function applyPhase() {
+    const phi = parseFloat(phaseSl.value) * Math.PI / 180;
+    const t = ctx.currentTime;
+    gSin.gain.setTargetAtTime(Math.cos(phi), t, 0.02);
+    gCos.gain.setTargetAtTime(Math.sin(phi), t, 0.02);
+  }
+  phaseSl.addEventListener('input', () => {
+    phaseVal.textContent = phaseSl.value + '°';
+    if (ctx) applyPhase();
+  });
+  gainSl.addEventListener('input', () => {
+    gainVal.textContent = parseFloat(gainSl.value).toFixed(2);
+    if (ctx && locked) master.gain.setTargetAtTime(parseFloat(gainSl.value), ctx.currentTime, 0.02);
+  });
+
+  // ---------- 자동 위상 스캔 ----------
+  sweepBtn.addEventListener('click', async () => {
+    if (!locked || sweeping) return;
+    sweeping = true;
+    sweepBtn.textContent = '스캔 중...';
+    sweepBtn.disabled = true;
+    phaseSl.disabled = true;
+    statusEl.textContent = '위상 스캔 중 (약 11초)';
+
+    const results = [];
+    for (let deg = 0; deg < 360; deg += 10) {
+      phaseSl.value = deg;
+      phaseVal.textContent = deg + '°';
+      applyPhase();
+      sweepSamples.length = 0;
+      await new Promise(r => setTimeout(r, 300));
+      if (!running || !locked) { sweeping = false; return; }
+      const avg = sweepSamples.length
+        ? sweepSamples.reduce((a, b) => a + b, 0) / sweepSamples.length : 0;
+      results.push({ deg, avg });
+    }
+
+    const best = results.reduce((m, r) => (r.avg < m.avg ? r : m), results[0]);
+    phaseSl.value = best.deg;
+    phaseVal.textContent = best.deg + '°';
+    applyPhase();
+
+    sweeping = false;
+    sweepBtn.textContent = '자동 위상 스캔';
+    sweepBtn.disabled = false;
+    phaseSl.disabled = false;
+    statusEl.textContent = `최적 위상 ${best.deg}° (잔류 ${best.avg.toFixed(1)} dB) — 미세 조정하세요`;
+  });
+})();
+</script>
+</body>
+</html>

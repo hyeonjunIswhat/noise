@@ -37,23 +37,27 @@ export class AutoPipeline {
 
   // ⓪ 출력 자가진단: 440Hz 테스트음이 마이크로 되돌아오는지
   async selfTest() {
-    this.ui.stage('⓪ 출력 자가진단 — 테스트음 (삐— 소리가 나야 정상)');
+    this.ui.stage('⓪ 출력 자가진단 — 테스트음 (삐— 삐— 소리가 나야 정상)');
     const TEST_F = 440;
     const saved = this.e.lockedFreq;
     this.e.setFreq(TEST_F);
     this.e.setPhase(0);
     const bg = await this.sample(500);
-    this.e.applyMaster(0.5);
-    await sleep(300);
-    const on = await this.sample(700);
+    this.e.applyMaster(0.75);          // 1차: 440Hz 크게
+    await sleep(200);
+    const on = await this.sample(600);
+    this.e.setFreq(660);               // 2차: 660Hz — 귀로 구분되게
+    await sleep(500);
     this.e.applyMaster(0);
     await sleep(200);
     this.e.lockedFreq = saved;
     const snr = on - bg;
     if (snr < 8) {
-      this.ui.error('⚠️ 자가진단 실패: 테스트음(+' + snr.toFixed(1) + ' dB)이 마이크에 감지되지 않습니다.<br>'
-        + '① 무음 스위치 해제 ② 미디어 볼륨 올리기 ③ 블루투스 이어폰 연결 끊기 ④ 유선 스피커 확인. '
-        + '해결 후 [종료]→[시작].');
+      const diag = '[진단: 미디어경로 ' + (this.e.elPlay === 'ok' ? '정상' : '실패(' + this.e.elPlay + ')')
+        + ' / 오디오상태 ' + this.e.ctx.state + ' / ' + this.e.ctx.sampleRate + 'Hz]';
+      this.ui.error('⚠️ 자가진단 실패: 테스트음 +' + snr.toFixed(1) + ' dB — 마이크에 감지 안 됨. ' + diag + '<br>'
+        + '① 측면 무음 스위치 해제 ② 볼륨 버튼으로 미디어 볼륨 올리기 ③ 블루투스 기기 연결 끊기 '
+        + '④ 유선 스피커 연결/전원 확인 → [종료] 후 [시작].');
       return false;
     }
     this.ui.error('');

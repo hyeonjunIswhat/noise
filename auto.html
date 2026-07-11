@@ -170,6 +170,37 @@
     if(baselineDb) gainRO.textContent=Math.max(0,baselineDb-db).toFixed(1)+' dB';
   }
 
+  // ---------- 출력 자가진단: 테스트음이 마이크로 되돌아오는지 검사 ----------
+  async function selfTest(){
+    stageEl.textContent='⓪ 출력 자가진단 — 테스트음 (삐— 소리가 나야 정상)';
+    const TEST_F=440;
+    const saved=lockedFreq;
+    lockedFreq=TEST_F; // 잔류 측정이 이 주파수를 보도록
+    oscSin.frequency.setValueAtTime(TEST_F,ctx.currentTime);
+    oscCos.frequency.setValueAtTime(TEST_F,ctx.currentTime);
+    gSin.gain.setTargetAtTime(1,ctx.currentTime,0.01);
+    gCos.gain.setTargetAtTime(0,ctx.currentTime,0.01);
+    // 배경 측정 → 톤 출력 → 재측정
+    const bg=await sample(500);
+    master.gain.setTargetAtTime(0.5,ctx.currentTime,0.02);
+    await sleep(300);
+    const on=await sample(700);
+    master.gain.setTargetAtTime(0,ctx.currentTime,0.02);
+    await sleep(200);
+    lockedFreq=saved;
+    const snr=on-bg;
+    if(snr<8){
+      errEl.innerHTML='⚠️ 자가진단 실패: 테스트음(+'+snr.toFixed(1)+' dB)이 마이크에 감지되지 않습니다.<br>'
+        +'확인 순서 — ① 측면 무음 스위치 해제 ② 미디어 볼륨 올리기 '
+        +'③ 블루투스 이어폰/에어팟 연결 끊기(제어센터에 헤드폰 아이콘이 있으면 소리가 그쪽으로 갑니다) '
+        +'④ 유선 스피커 연결 확인. 해결 후 [종료]→[시작] 재실행.';
+      return false;
+    }
+    errEl.textContent='';
+    statusEl.textContent='자가진단 통과: 출력→마이크 +'+snr.toFixed(1)+' dB';
+    return true;
+  }
+
   // ---------- 자동 파이프라인 ----------
   async function calibrate(fullCoarse){
     // 1) 주파수 측정 (출력 무음 상태)
@@ -187,7 +218,7 @@
     // 2) 거친 스캔
     setVol(Math.max(vol,0.12));
     master.gain.setTargetAtTime(vol,ctx.currentTime,0.03);
-    let best={deg:phaseDeg,level:Infinity};
+    let best={deg:phaseDeg,level:Infinity}, worst=-Infinity;
     if(fullCoarse){
       stageEl.textContent='② 위상 거친 스캔 (약 11초)';
       for(let d=0;d<360;d+=10){
@@ -196,6 +227,13 @@
         if(aborted) return false;
         updateResidualUI(r);
         if(r<best.level) best={deg:d,level:r};
+        if(r>worst) worst=r;
+      }
+      // 위상을 360° 돌렸는데 잔류가 안 움직임 = 안티톤이 마이크 지점에 도달 못 함
+      if(worst-best.level<2){
+        errEl.innerHTML='⚠️ 위상 변화에 잔류가 반응하지 않습니다(변화폭 '
+          +(worst-best.level).toFixed(1)+' dB). 스피커 소리가 상쇄 지점(아이폰 마이크)에 '
+          +'도달하지 않거나 너무 작습니다 — 스피커를 아이폰 가까이, 미디어 볼륨을 올려보세요.';
       }
     } else { best={deg:phaseDeg,level:await sample(300)}; }
 
@@ -316,6 +354,8 @@
       startBtn.disabled=true; pauseBtn.disabled=false; stopBtn.disabled=false;
       statusEl.textContent='자동 보정 시작';
 
+      const pathOk=await selfTest();
+      if(!pathOk){ stageEl.textContent='출력 경로 문제 — 위 안내 확인'; return; }
       const ok=await calibrate(true);
       if(ok) await trackLoop();
     }catch(e){

@@ -13,6 +13,8 @@ export class AudioEngine {
   }
 
   async start() {
+    // iOS 17+: 마이크 활성 시 출력이 수화부로 가는 것을 방지 — 재생 세션으로 강제
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (_) {}
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     await this.ctx.resume();
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: {
@@ -24,12 +26,16 @@ export class AudioEngine {
     src.connect(this.analyser);
 
     this.master = this.ctx.createGain(); this.master.gain.value = 0;
+    // 출력 이중화: (1) audio 엘리먼트(미디어 경로, 수화부/무음 회피) + (2) ctx 직결(백업)
+    this.master.connect(this.ctx.destination);
     const msDest = this.ctx.createMediaStreamDestination();
     this.master.connect(msDest);
     this.audioEl = new Audio();
     this.audioEl.srcObject = msDest.stream;
     this.audioEl.setAttribute('playsinline', '');
-    await this.audioEl.play(); // 버튼 클릭 제스처 내에서 호출됨
+    this.elPlay = 'ok';
+    try { await this.audioEl.play(); }
+    catch (e) { this.elPlay = e.name; } // 실패해도 ctx 직결로 계속
 
     this.gSin = this.ctx.createGain(); this.gCos = this.ctx.createGain();
     this.gSin.connect(this.master); this.gCos.connect(this.master);
